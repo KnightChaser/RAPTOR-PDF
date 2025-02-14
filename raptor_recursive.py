@@ -18,7 +18,6 @@ import umap
 from sklearn.mixture import GaussianMixture
 
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.docstore.document import Document
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
