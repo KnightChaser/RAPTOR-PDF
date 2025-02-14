@@ -1,8 +1,12 @@
 # semantic_store_vectorstore.py
 """
 Split the text using a semantic-based splitter (SemanticChunker).
-Build and store a vector store (FAISS) from the semantic chunks.
+Build and store a vector store (FAISS) from the semantic chunks,
+using a cached version if the same PDF file has been processed before.
 """
+
+import os
+import hashlib
 from typing import List
 
 from load_env import get_api_credentials
@@ -11,8 +15,18 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_community.vectorstores import FAISS
 
-
 from pdf_loader import load_pdf_document
+
+
+def compute_file_hash(file_path: str) -> str:
+    """
+    Compute an MD5 hash of the file's content to use as a cache key.
+    """
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
 
 
 def create_semantic_documents(
@@ -33,33 +47,38 @@ def create_semantic_documents(
     else:
         text_splitter = SemanticChunker(OpenAIEmbeddings())
 
-    # Create the document objects
+    # Create the document objects.
     documents: List[Document] = text_splitter.create_documents([full_text])
 
-    if documents:
-        print("First document chunk:")
-        print(documents[0].page_content)
-        print(
-            f"{type(documents)} => {type(documents[0])} => {type(documents[0].page_content)}"
-        )
-        print("=" * 50)
-
+    # Optionally, show progress for document creation if needed (using tqdm for long lists).
+    # For now, we assume a single long text so no loop is necessary.
     return documents
 
 
-def create_and_store_vectorstore(
-    documents: List[Document], vectorstore_path: str = "./vectorstore_index"
+def create_or_load_vectorstore(
+    documents: List[Document], vectorstore_path: str
 ) -> FAISS:
     """
-    Create a FAISS vectorstore from the given semantic documetns and store it locally.
-    And return the created vectorstore object as well.
+    Create a FAISS vector store from the given semantic documents and store it locally.
+    If the vector store already exists at the given path, load and return it.
     """
-    texts: List[str] = [document.page_content for document in documents]
     embeddings = OpenAIEmbeddings()
-    vectorstore: FAISS = FAISS.from_texts(texts=texts, embedding=embeddings)
 
-    vectorstore.save_local(vectorstore_path)
-    print(f"Vector store saved to {vectorstore_path}")
+    if os.path.exists(vectorstore_path):
+        # Load with dangerous deserialization enabled (trusting our own cache)
+        print(f"Found the cached vector store at {vectorstore_path}. Loading it...")
+        vectorstore: FAISS = FAISS.load_local(
+            vectorstore_path, embeddings, allow_dangerous_deserialization=True
+        )
+    else:
+        print(
+            f"Building the vector store for the new document at {vectorstore_path}..."
+        )
+        texts: List[str] = [document.page_content for document in documents]
+        # If processing many texts, you can wrap this loop with tqdm, for example:
+        # texts = [text for text in tqdm(texts, desc="Processing document texts")]
+        vectorstore = FAISS.from_texts(texts=texts, embedding=embeddings)
+        vectorstore.save_local(vectorstore_path)
 
     return vectorstore
 
@@ -67,35 +86,36 @@ def create_and_store_vectorstore(
 def main() -> None:
     """
     1. Prompt the user for a PDF file path.
-    2. Load the PDF document(pdf_loader.py) and get the page texts.
+    2. Load the PDF document and get the page texts.
     3. Create the semantic document chunks using SemanticChunker.
-    4. Build and store a FAISS vector store from the chunks.
+    4. Build or load a FAISS vector store from the chunks, using a cached version if available.
     """
-    print("Loading environment variables...")
     get_api_credentials()
 
-    pdf_path: str = input("Enter the path to the PDF file: ")
+    pdf_path: str = input("Enter the path to the PDF file: ").strip()
     if not pdf_path:
         raise ValueError("No file path provided.")
 
     try:
+        # Compute a unique hash for the PDF to use for caching.
+        file_hash: str = compute_file_hash(pdf_path)
+        cache_dir: str = "./vectorstore_cache"
+        os.makedirs(cache_dir, exist_ok=True)
+        vectorstore_path: str = os.path.join(cache_dir, file_hash)
+
+        # Load the PDF document (list of page texts).
         page_texts: List[str] = load_pdf_document(pdf_path)
-        print(
-            f"Loaded {len(page_texts)} pages from {pdf_path}."
-            f"Total content length: {sum(len(text) for text in page_texts)}"
-        )
 
-        # Create the semantic documents
+        # Create the semantic documents.
         documents: List[Document] = create_semantic_documents(page_texts)
-        print(f"Created {len(documents)} semantic documents.")
 
-        # Create and store the vector store
-        vectorstore: FAISS = create_and_store_vectorstore(documents)
+        # Create or load the vector store from cache.
+        _: FAISS = create_or_load_vectorstore(documents, vectorstore_path)
 
-        print("Vector store created and saved successfully.")
-        print(f"Vector store object: {vectorstore}")
+        # Final informational message.
+        print("Vector store is ready.")
     except Exception as e:
-        print(f"Failed to load PDF document: {e}")
+        print(f"Failed to process PDF document: {e}")
 
 
 if __name__ == "__main__":
