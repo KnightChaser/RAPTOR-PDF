@@ -2,3 +2,4 @@ venv
 .env
 __pycache__
 vectorstore_cache
+vectorstore_index
