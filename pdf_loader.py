@@ -4,7 +4,6 @@ Load PDF files from a user input(file path) and analyze the token amount distrib
 """
 
 import os
-import sys
 import warnings
 from typing import List
 

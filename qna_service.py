@@ -6,6 +6,7 @@ via a retrieval-augmented generation (RAG) chain.
 """
 
 import warnings
+from langchain_community.vectorstores import FAISS
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
@@ -16,24 +17,23 @@ def format_documents(docs):
     """
     Format a list of documents into a single string.
 
-    This function now checks if each document is a dict (e.g. returned by the retriever)
+    This function checks if each document is a dict (e.g. returned by the retriever)
     or an object with a 'page_content' attribute, and extracts the text accordingly.
     """
     formatted = []
     for doc in docs:
         if isinstance(doc, dict):
-            # Try to get 'page_content' or fallback to str(doc)
             content = doc.get("page_content", str(doc))
         else:
-            # Assume doc has a page_content attribute
             content = getattr(doc, "page_content", str(doc))
         formatted.append(f"<document>{content}</document>")
     return "\n\n".join(formatted)
 
 
-def run_rag_chain(vectorstore):
+def create_rag_chain(vectorstore):
     """
-    Build a RAG chain that retrieves context from the vectorstore and generates an answer.
+    Build a RAG chain that retrieves context from the vectorstore, prints which documents
+    were retrieved in an organized manner, and generates an answer.
 
     Args:
         vectorstore: The FAISS vectorstore containing embedded texts.
@@ -43,6 +43,27 @@ def run_rag_chain(vectorstore):
     """
     # Create a retriever from the vectorstore.
     retriever = vectorstore.as_retriever()
+
+    def retrieve_and_print(question):
+        """
+        Retrieve documents based on the question, print them, and return a formatted string.
+        """
+        # Retrieve documents for the given question.
+        # (Assuming your retriever uses get_relevant_documents method)
+        docs = retriever.get_relevant_documents(question)
+
+        # Print the retrieved documents in an organized manner.
+        print("\n--- Retrieved Documents ---")
+        for idx, doc in enumerate(docs, start=1):
+            if isinstance(doc, dict):
+                content = doc.get("page_content", str(doc))
+            else:
+                content = getattr(doc, "page_content", str(doc))
+            print(f"Document {idx}:\n{content}\n{'-' * 30}")
+        print("---------------------------\n")
+
+        # Return the formatted documents for use in the chain.
+        return format_documents(docs)
 
     # Define the prompt template.
     prompt_template = """
@@ -75,12 +96,32 @@ def run_rag_chain(vectorstore):
 
     # Build the RAG chain.
     rag_chain = (
-        {"context": retriever | format_documents, "question": RunnablePassthrough()}
+        {"context": retrieve_and_print, "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
     return rag_chain
+
+
+def ask_raptor_rag(vectorstore: FAISS, question: str) -> None:
+    """
+    Ask a question to the RAPTOR RAG chain and print the answer on the console.
+
+    Args:
+        question (str): The question to ask the RAG chain.
+    """
+    if not question:
+        print("Error: Please provide a question.")
+        return
+
+    rag_chain = create_rag_chain(vectorstore)
+    answer_chunk = []
+    print("Answer: ", end="")
+    for answer in rag_chain.stream(question):
+        answer_chunk.append(answer)
+        print(answer, end="")
+    print("\n")
 
 
 def run_qna_service(vectorstore):
@@ -91,20 +132,14 @@ def run_qna_service(vectorstore):
         vectorstore: The FAISS vectorstore to use for retrieval.
     """
     print("\nQnA service is ready. Type 'exit' to quit.")
-    rag_chain = run_rag_chain(vectorstore)
     while True:
         question = input("\nEnter your question: ").strip()
         if question.lower() in ["exit", "quit"]:
             print("Exiting QnA service. See you next time!")
             break
 
-        # Invoke the chain with the user's question.
-        answer_chunk = []
-        print("Answer: ")
-        for answer in rag_chain.stream(question):
-            answer_chunk.append(answer)
-            print(answer, end="")
-        print("\n")
+        # Fire the question!!! Yes, we are ready to answer.
+        ask_raptor_rag(vectorstore, question)
 
 
 if __name__ == "__main__":
